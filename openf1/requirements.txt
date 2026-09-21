@@ -1,0 +1,19 @@
+aiohttp==3.12.13
+aiomqtt==2.4.0
+beautifulsoup4==4.13.4
+boto3==1.43.50
+cachetools==5.5.2
+fastapi==0.115.13
+fastf1_livetiming @ git+https://github.com/br-g/fastf1-livetiming.git#egg=fastf1_livetiming
+loguru==0.7.3
+lxml==6.0.0
+motor==3.7.1
+pydantic==2.11.7
+pymongo==4.13.2
+python-dateutil==2.9.0.post0
+pytz==2025.2
+requests==2.32.4
+slowapi==0.1.9
+tqdm==4.67.1
+typer==0.16.0
+uvicorn==0.34.3

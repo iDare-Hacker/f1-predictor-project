@@ -1,0 +1,27 @@
+#! /usr/bin/env sh
+
+case $ROLE in
+  "api")
+    uvicorn --host="0.0.0.0" openf1.services.query_api.app:app --reload
+    ;;
+  "ingest-realtime")
+    sleep 2
+    python -m openf1.services.ingestor_livetiming.real_time.app
+    ;;
+  "ingest-historical")
+    YEAR=$(date +"%Y")
+    python -m openf1.services.ingestor_livetiming.historical.main get-schedule $YEAR
+    python -m openf1.services.ingestor_livetiming.historical.main ingest-season $YEAR
+    ;;
+  "scrape-latest")
+    sleep 2 # api needs to be fully up before this will work
+    python -m openf1.services.f1_scraping.schedule ingest-meetings
+    python -m openf1.services.f1_scraping.schedule ingest-sessions
+    python -m openf1.services.f1_scraping.session_result
+    python -m openf1.services.f1_scraping.starting_grid
+    ;;
+  *)
+    echo "\"$ROLE\" not recognized, please set a valid \$ROLE"
+    exit 1
+    ;;
+esac
