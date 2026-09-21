@@ -559,9 +559,7 @@ h4 { font-size: 1rem; font-weight: 600; }
 
 /* ── Track Map ── */
 .track-map-container {
-  flex: 1;
-  height: 100%;
-  min-height: 360px;
+  height: 360px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -570,8 +568,8 @@ h4 { font-size: 1rem; font-weight: 600; }
 }
 
 #track-svg {
-  max-width: 70%;
-  max-height: 70%;
+  max-width: 100%;
+  max-height: 100%;
   overflow: visible;
 }
 
@@ -594,9 +592,10 @@ h4 { font-size: 1rem; font-weight: 600; }
   filter: drop-shadow(0 0 4px currentColor);
 }
 
-.driver-dot:hover { stroke: #fff; stroke-width: 4; }
+.driver-dot:hover { r: 7; }
 
 .driver-label {
+  font-size: 8px;
   font-weight: 700;
   fill: var(--f1-white);
   text-anchor: middle;
@@ -606,6 +605,8 @@ h4 { font-size: 1rem; font-weight: 600; }
 }
 
 .driver-label-bg {
+  rx: 3;
+  ry: 3;
   fill: rgba(0,0,0,0.7);
 }
 

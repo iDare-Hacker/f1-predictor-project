@@ -16,14 +16,14 @@
 const API_BASE = 'https://api.openf1.org/v1';
 
 const POLL_RATES = {
-  session:      60_000,
-  drivers:      60_000,
-  position:     15_000,
-  laps:         20_000,
-  carData:      10_000,
-  raceControl:  20_000,
-  pit:          30_000,
-  location:     15_000,
+  session:      30_000,
+  drivers:      30_000,
+  position:      3_000,
+  laps:          5_000,
+  carData:       3_000,
+  raceControl:   5_000,
+  pit:           5_000,
+  location:      3_000,
 };
 
 const TYRE_MAP = {
@@ -118,19 +118,16 @@ class OpenF1Client {
     return this.fetch('pit', { session_key: sessionKey });
   }
 
-  // Latest GPS locations (for track map) - limited to specific drivers to avoid API overload
-  async getLocations(sessionKey, driverNumbers) {
+  // Latest GPS locations (for track map)
+  async getLocations(sessionKey) {
+    const data = await this.fetch('location', { session_key: sessionKey });
     const map = {};
-    for (const dn of driverNumbers) {
-      try {
-        const data = await this.fetch('location', { session_key: sessionKey, driver_number: dn });
-        if (data.length > 0) {
-          map[dn] = data[data.length - 1]; // Keep only the latest point for this driver
-        }
-      } catch (e) {
-        console.warn(`Could not fetch location for driver ${dn}`, e.message);
+    data.forEach(loc => {
+      const dn = loc.driver_number;
+      if (!map[dn] || new Date(loc.date) > new Date(map[dn].date)) {
+        map[dn] = loc;
       }
-    }
+    });
     return map; // keyed by driver_number
   }
 }
@@ -304,57 +301,28 @@ class TrackMapRenderer {
     this._viewBox = { minX: 0, minY: 0, w: 1000, h: 600 };
   }
 
-  // Collect track outline from location data of a single driver's full trail
-  async buildTrack(sessionKey) {
-    if (this._trackBuilt) return;
+  // Collect track outline from location data of all drivers
+  buildTrack(locationsMap) {
+    if (this._trackBuilt || Object.keys(locationsMap).length === 0) return;
 
-    try {
-      // Fetch a full trail for a driver to draw the track shape
-      // (Using driver 1 as a reliable baseline for most sessions)
-      const resp = await fetch(`https://api.openf1.org/v1/location?session_key=${sessionKey}&driver_number=1`);
-      if (!resp.ok) return;
-      const rawPts = await resp.json();
-      
-      // Filter out invalid (0,0) points which happen when the car is stationary/off
-      // Downsample by taking every 10th point to prevent SVG rendering lag
-      const pts = rawPts.filter((p, i) => i % 10 === 0 && (p.x !== 0 && p.y !== 0) && (p.x != null && p.y != null));
+    // Use any one driver's recent track points from history
+    // Since we only get latest per driver, we build a static reference from all drivers
+    const pts = Object.values(locationsMap).map(l => ({ x: l.x ?? 0, y: l.y ?? 0 }));
+    if (pts.length < 3) return;
 
-      if (pts.length < 10) return;
+    this._trackPoints = pts;
 
-      const xs = pts.map(p => p.x);
-      const ys = pts.map(p => -p.y); // OpenF1 Y is inverted
+    const xs = pts.map(p => p.x);
+    const ys = pts.map(p => p.y);
+    const pad = 150;
+    const minX = Math.min(...xs) - pad;
+    const minY = Math.min(...ys) - pad;
+    const w = Math.max(...xs) - minX + pad;
+    const h = Math.max(...ys) - minY + pad;
+    this._viewBox = { minX, minY, w, h };
 
-      const pad = 800; // Extra padding for track edges to shrink map size
-      const minX = Math.min(...xs) - pad;
-      const minY = Math.min(...ys) - pad;
-      const w = Math.max(...xs) - minX + (pad * 2);
-      const h = Math.max(...ys) - minY + (pad * 2);
-      
-      // Save it so renderDrivers can use it to scale things correctly
-      this._viewBox = { minX, minY, w, h };
-      
-      // Keep viewBox fixed based on the track dimensions
-      this.svg.setAttribute('viewBox', `${minX} ${minY} ${w} ${h}`);
-      this.svg.setAttribute('width', '100%');
-      this.svg.setAttribute('height', '100%');
-
-      // Draw the track path
-      const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
-      const pointsString = pts.map(p => `${p.x},${-p.y}`).join(' ');
-      polyline.setAttribute('points', pointsString);
-      polyline.setAttribute('fill', 'none');
-      polyline.setAttribute('stroke', 'rgba(255, 255, 255, 0.15)');
-      polyline.setAttribute('stroke-width', `${Math.max(w * 0.015, 50)}`); // Dynamic track line thickness
-      polyline.setAttribute('stroke-linejoin', 'round');
-      polyline.setAttribute('stroke-linecap', 'round');
-      
-      // Prepend so it goes under the driver dots
-      this.svg.prepend(polyline);
-
-      this._trackBuilt = true;
-    } catch (e) {
-      console.warn("Could not build track outline", e);
-    }
+    this.svg.setAttribute('viewBox', `${minX} ${minY} ${w} ${h}`);
+    this._trackBuilt = false; // will build outline on first full render
   }
 
   _project(x, y) {
@@ -364,19 +332,23 @@ class TrackMapRenderer {
   renderDrivers(locationsMap, driversMap, selectedDriver) {
     if (Object.keys(locationsMap).length === 0) return;
 
-    // Remove old driver dots and placeholder
-    const oldDots = this.svg.querySelectorAll('.driver-dot, .driver-label-bg, .driver-label, text');
-    oldDots.forEach(el => el.remove());
+    const xs = Object.values(locationsMap).map(l => l.x ?? 0);
+    const ys = Object.values(locationsMap).map(l => l.y ?? 0);
+    const pad = 150;
+    const minX = Math.min(...xs) - pad;
+    const maxX = Math.max(...xs) + pad;
+    const minY = Math.min(...ys) - pad;
+    const maxY = Math.max(...ys) + pad;
+    const w = maxX - minX;
+    const h = maxY - minY;
 
-    // Calculate dynamic sizes based on the track viewBox so it looks good on any circuit
-    const vbWidth = this._viewBox?.w || 10000; // Fallback to 10000 if not built
-    const dotR = vbWidth * 0.017;
-    const dotSelR = vbWidth * 0.025;
-    const strokeW = vbWidth * 0.0023;
-    const labelW = vbWidth * 0.06;
-    const labelH = vbWidth * 0.028;
-    const labelRx = vbWidth * 0.005;
-    const fontSize = vbWidth * 0.02;
+    this.svg.setAttribute('viewBox', `${minX} ${-maxY} ${w} ${h}`);
+    this.svg.setAttribute('width',  '100%');
+    this.svg.setAttribute('height', '100%');
+
+    // Remove old driver dots
+    const oldDots = this.svg.querySelectorAll('.driver-dot, .driver-label-bg, .driver-label');
+    oldDots.forEach(el => el.remove());
 
     // Draw driver dots
     Object.entries(locationsMap).forEach(([dn, loc]) => {
@@ -385,37 +357,36 @@ class TrackMapRenderer {
       const abbr  = drv.name_acronym ?? `#${dn}`;
       const cx    = loc.x ?? 0;
       const cy    = -(loc.y ?? 0);
-      const r     = parseInt(dn) === selectedDriver ? dotSelR : dotR;
+      const r     = parseInt(dn) === selectedDriver ? 10 : 7;
       const isSel = parseInt(dn) === selectedDriver;
 
       const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       circle.setAttribute('cx', cx);
       circle.setAttribute('cy', cy);
-      circle.style.r = `${r}px`; // Bypass CSS cache
+      circle.setAttribute('r', r);
       circle.setAttribute('fill', color);
       circle.setAttribute('class', 'driver-dot');
       circle.setAttribute('stroke', isSel ? '#fff' : 'rgba(0,0,0,0.5)');
-      circle.style.strokeWidth = `${strokeW}px`;
+      circle.setAttribute('stroke-width', isSel ? 2 : 1);
       circle.style.cursor = 'pointer';
       circle.onclick = () => window.app?.selectDriver(parseInt(dn));
       this.svg.appendChild(circle);
 
       // Label
       const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      rect.setAttribute('x', cx - (labelW / 2));
-      rect.setAttribute('y', cy - r - labelH - (vbWidth * 0.005));
-      rect.setAttribute('width', labelW);
-      rect.setAttribute('height', labelH);
-      rect.style.rx = `${labelRx}px`;
-      rect.style.ry = `${labelRx}px`;
+      rect.setAttribute('x', cx - 12);
+      rect.setAttribute('y', cy - r - 16);
+      rect.setAttribute('width', 24);
+      rect.setAttribute('height', 13);
+      rect.setAttribute('rx', 3);
       rect.setAttribute('class', 'driver-label-bg');
       this.svg.appendChild(rect);
 
       const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
       text.setAttribute('x', cx);
-      text.setAttribute('y', cy - r - (labelH / 2) + (fontSize * 0.3));
+      text.setAttribute('y', cy - r - 10);
       text.setAttribute('class', 'driver-label');
-      text.style.fontSize = `${fontSize}px`; // Bypass CSS cache
+      text.setAttribute('font-size', '10');
       text.setAttribute('fill', '#fff');
       text.textContent = abbr;
       this.svg.appendChild(text);
@@ -680,9 +651,6 @@ class F1App {
       console.log('[F1App] Session:', this.session.session_name, this.sessionKey);
       this.sessionRenderer.render(this.session, []);
       document.getElementById('status-badge')?.classList.remove('hidden');
-      
-      // Build track outline for this session in the background
-      this.trackMap.buildTrack(this.sessionKey);
     } catch (e) {
       console.error('[F1App] Session load error:', e);
       this.toasts.show('API Error', 'Could not load session data. Check connection.', 'error');
@@ -731,16 +699,10 @@ class F1App {
       } catch (e) { this._handlePollError('laps', e); }
     }, POLL_RATES.laps);
 
-    // Locations (track map) - Fetch only for Top 3 + Selected Driver to respect rate limits
+    // Locations (track map)
     this.polling.register('location', async () => {
       try {
-        let driversToFetch = this.positions.slice(0, 3).map(p => p.driver_number);
-        if (this.selectedDriver && !driversToFetch.includes(this.selectedDriver)) {
-          driversToFetch.push(this.selectedDriver);
-        }
-        if (driversToFetch.length === 0) driversToFetch = [1]; // fallback
-
-        this.locationsMap = await this.client.getLocations(this.sessionKey, driversToFetch);
+        this.locationsMap = await this.client.getLocations(this.sessionKey);
         this.trackMap.renderDrivers(this.locationsMap, this.driversMap, this.selectedDriver);
       } catch (e) { this._handlePollError('location', e); }
     }, POLL_RATES.location);
