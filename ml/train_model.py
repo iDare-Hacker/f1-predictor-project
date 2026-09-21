@@ -24,8 +24,18 @@ import argparse
 import json
 import os
 import sys
+import requests
 import warnings
 warnings.filterwarnings('ignore')
+
+# Patch requests.Session to always use a 15-second timeout,
+# because FastF1 doesn't set one by default and hangs on dropped connections.
+old_request = requests.Session.request
+def new_request(*args, **kwargs):
+    if 'timeout' not in kwargs or kwargs['timeout'] is None:
+        kwargs['timeout'] = 15
+    return old_request(*args, **kwargs)
+requests.Session.request = new_request
 
 import fastf1
 import numpy as np
@@ -157,6 +167,8 @@ def fetch_race_data(year: int, round_number: int) -> pd.DataFrame | None:
         return results
 
     except Exception as e:
+        if "RateLimitExceededError" in str(type(e)):
+            raise e
         print(f"  ✗ {year} R{round_number:02d} — {e}")
         return None
 
@@ -166,16 +178,31 @@ def collect_all_data(years: list[int], verbose: bool = False) -> pd.DataFrame:
     Iterates over all rounds for the given years and collects race results.
     """
     all_dfs = []
+    hit_rate_limit = False
 
     for year in years:
-        schedule = fastf1.get_event_schedule(year, include_testing=False)
+        if hit_rate_limit:
+            break
+            
+        try:
+            schedule = fastf1.get_event_schedule(year, include_testing=False)
+        except Exception as e:
+            print(f"\n[{year}] Failed to get schedule: {e}")
+            print("Stopping data collection due to rate limit/error.")
+            break
+            
         race_rounds = schedule['RoundNumber'].tolist()
         print(f"\n[{year}] Found {len(race_rounds)} rounds")
 
         for rnd in race_rounds:
-            df = fetch_race_data(year, rnd)
-            if df is not None and not df.empty:
-                all_dfs.append(df)
+            try:
+                df = fetch_race_data(year, rnd)
+                if df is not None and not df.empty:
+                    all_dfs.append(df)
+            except Exception as e:
+                print(f"  ✗ {year} R{rnd:02d} — Stopped collection: {e}")
+                hit_rate_limit = True
+                break
 
     if not all_dfs:
         raise RuntimeError("No data collected — check FastF1 connectivity")
@@ -318,6 +345,10 @@ def main():
     else:
         print("\n📡 Fetching data from FastF1…")
         df = collect_all_data(args.years)
+        if df is None or df.empty:
+            print("\n❌ No data collected. Cannot train model. (Did you hit the rate limit?)")
+            return
+            
         df.to_csv(DATA_PATH, index=False)
         print(f"\n💾 Data saved to {DATA_PATH}")
 
