@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="description" content="F1 Live Race Visualizer — Real-time Formula 1 telemetry, leaderboard, and track map powered by OpenF1 API" />
+  <meta name="theme-color" content="#15151E" />
+  <title>F1 Live · Race Visualizer</title>
+
+  <!-- Preconnect for performance -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;900&display=swap" rel="stylesheet" />
+
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ════════════════════════════════════════════
+     TOP NAVIGATION BAR
+════════════════════════════════════════════ -->
+<nav class="navbar" role="navigation" aria-label="Primary navigation">
+  <a class="navbar__logo" href="#" aria-label="F1 Live Home">
+    <div class="navbar__logo-icon" aria-hidden="true">F1</div>
+    <span class="navbar__brand">Formula <span>1</span> Live</span>
+  </a>
+
+  <div class="navbar__status">
+    <!-- Live badge -->
+    <div class="live-badge" id="status-badge" aria-live="polite" aria-label="Live data status">
+      <span class="live-badge__dot" aria-hidden="true"></span>
+      LIVE
+    </div>
+
+    <!-- Current track flag -->
+    <div id="hero-flag" class="track-flag track-flag--green" role="status">
+      🟢 Green
+    </div>
+
+    <!-- Last updated -->
+    <span class="status-text" id="status-text">Connecting…</span>
+  </div>
+</nav>
+
+<!-- Racing stripe accent -->
+<div class="racing-stripe" aria-hidden="true"></div>
+
+<!-- ════════════════════════════════════════════
+     SESSION HERO BANNER
+════════════════════════════════════════════ -->
+<section class="session-hero" aria-labelledby="hero-name">
+  <div class="container">
+    <div class="session-hero__grid">
+
+      <div class="session-hero__info">
+        <div class="session-hero__round uppercase" id="hero-round">Loading…</div>
+        <h1 class="session-hero__name" id="hero-name">F1 Live Race</h1>
+        <div class="session-hero__circuit" id="hero-circuit">
+          📍 Connecting to OpenF1 API…
+        </div>
+      </div>
+
+      <div class="session-hero__meta" aria-label="Session statistics">
+        <div class="meta-stat">
+          <div class="meta-stat__value mono" id="hero-lap">–</div>
+          <div class="meta-stat__label">Lap</div>
+        </div>
+        <div class="meta-divider" aria-hidden="true"></div>
+        <div class="meta-stat">
+          <div class="meta-stat__value mono" id="hero-session-type">–</div>
+          <div class="meta-stat__label">Session</div>
+        </div>
+        <div class="meta-divider" aria-hidden="true"></div>
+        <div class="meta-stat">
+          <div class="meta-stat__value mono" id="hero-time" aria-live="polite">–:––</div>
+          <div class="meta-stat__label">UTC</div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ════════════════════════════════════════════
+     DRIVER TELEMETRY CHIP SELECTOR
+════════════════════════════════════════════ -->
+<div class="session-selector" role="toolbar" aria-label="Driver selector for telemetry">
+  <div class="driver-selector" id="telemetry-driver-chips">
+    <!-- Chips rendered by JS -->
+    <span class="dim" style="font-size:0.75rem;padding:8px">Loading drivers…</span>
+  </div>
+</div>
+
+<!-- ════════════════════════════════════════════
+     MAIN DASHBOARD GRID
+════════════════════════════════════════════ -->
+<main class="dashboard" id="main-dashboard" role="main">
+
+  <!-- ─── COLUMN 1: LEADERBOARD ─── -->
+  <section class="panel dashboard__leaderboard" aria-labelledby="lb-title">
+    <div class="panel__header">
+      <div class="panel__title">
+        <div class="panel__title-accent" aria-hidden="true"></div>
+        <span id="lb-title">Race Standings</span>
+      </div>
+      <span class="panel__badge" id="lb-count" aria-live="polite">–</span>
+    </div>
+    <div class="panel__body" style="padding:var(--gap-xs)">
+      <div id="leaderboard-body" role="list" aria-label="Driver standings">
+        <!-- Skeleton -->
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+        <div class="skeleton skeleton-row"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── COLUMN 2 ROW 1: TRACK MAP ─── -->
+  <section class="panel dashboard__map" aria-labelledby="map-title">
+    <div class="panel__header">
+      <div class="panel__title">
+        <div class="panel__title-accent" aria-hidden="true"></div>
+        <span id="map-title">Track Map</span>
+      </div>
+      <span class="panel__badge">LIVE GPS</span>
+    </div>
+    <div class="track-map-container" id="track-map-container">
+      <svg id="track-svg"
+           role="img"
+           aria-label="F1 circuit track map with live driver positions"
+           viewBox="0 0 1000 600">
+        <!-- Track outline + driver dots rendered by JS -->
+        <text x="500" y="300"
+              text-anchor="middle"
+              fill="rgba(255,255,255,0.2)"
+              font-size="18"
+              font-family="Inter, sans-serif">
+          Awaiting GPS data…
+        </text>
+      </svg>
+    </div>
+  </section>
+
+  <!-- ─── COLUMN 2 ROW 2: TELEMETRY PANEL ─── -->
+  <section class="panel dashboard__telemetry" aria-labelledby="tel-title">
+    <div class="panel__header">
+      <div class="panel__title">
+        <div class="panel__title-accent" aria-hidden="true"></div>
+        <span id="tel-title">Driver Telemetry</span>
+      </div>
+      <span class="panel__badge">SELECT DRIVER ↑</span>
+    </div>
+    <div id="telemetry-body" class="panel__body">
+      <div class="error-state" style="padding:var(--gap-xl)">
+        <span class="error-state__icon">🎮</span>
+        <p class="error-state__body">Click a driver in the leaderboard or chip bar to view live telemetry</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─── COLUMN 3: RACE CONTROL / RADIO FEED ─── -->
+  <section class="panel dashboard__radio" aria-labelledby="rc-title">
+    <div class="panel__header">
+      <div class="panel__title">
+        <div class="panel__title-accent" aria-hidden="true"></div>
+        <span id="rc-title">Race Control</span>
+      </div>
+      <span class="panel__badge" id="rc-count" aria-live="polite">–</span>
+    </div>
+    <!-- Pit events strip -->
+    <div id="pit-strip" style="border-bottom:1px solid var(--glass-border); display:none">
+      <div class="panel__header" style="padding:var(--gap-xs) var(--gap-md)">
+        <div class="panel__title" style="font-size:0.65rem">
+          <div class="panel__title-accent" aria-hidden="true"></div>
+          Recent Pit Stops
+        </div>
+      </div>
+      <div id="pit-events" class="pit-events"></div>
+    </div>
+    <!-- Message feed -->
+    <div class="radio-feed" id="radio-feed-body" role="log" aria-live="polite" aria-label="Race control messages">
+      <div class="error-state" style="padding:var(--gap-xl)">
+        <span class="error-state__icon">📻</span>
+        <p class="error-state__body">Waiting for race control messages…</p>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<!-- ════════════════════════════════════════════
+     TOAST NOTIFICATIONS
+════════════════════════════════════════════ -->
+<div id="toast-container" class="toast-container" role="alert" aria-live="assertive"></div>
+
+<!-- ════════════════════════════════════════════
+     FOOTER
+════════════════════════════════════════════ -->
+<footer style="padding:var(--gap-md) var(--gap-xl);border-top:1px solid var(--f1-grey);display:flex;align-items:center;justify-content:space-between;font-size:0.7rem;color:var(--f1-grey-light);">
+  <span>Powered by <a href="https://openf1.org" target="_blank" rel="noopener" style="color:var(--f1-red);text-decoration:none">OpenF1 API</a></span>
+  <span>Data refreshes every 3–5 seconds · Not affiliated with Formula 1</span>
+  <span id="footer-session-key" class="mono">session: –</span>
+</footer>
+
+<!-- ════════════════════════════════════════════
+     INLINE CLOCK + SESSION KEY UPDATE
+════════════════════════════════════════════ -->
+<script>
+  // Live UTC clock in hero
+  function _updateClock() {
+    const el = document.getElementById('hero-time');
+    if (el) {
+      const now = new Date();
+      el.textContent = now.toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    }
+  }
+  setInterval(_updateClock, 1000);
+  _updateClock();
+</script>
+
+<script src="app.js" defer></script>
+
+<!-- Patch session key footer after app loads -->
+<script>
+  document.addEventListener('DOMContentLoaded', () => {
+    const footerKey = document.getElementById('footer-session-key');
+    setInterval(() => {
+      if (window.app?.sessionKey) {
+        footerKey.textContent = `session: ${window.app.sessionKey}`;
+        const lbCount = document.getElementById('lb-count');
+        if (lbCount && window.app.positions.length) {
+          lbCount.textContent = `${window.app.positions.length} drivers`;
+        }
+        const rcCount = document.getElementById('rc-count');
+        if (rcCount && window.app.raceControl.length) {
+          rcCount.textContent = `${window.app.raceControl.length} msgs`;
+        }
+      }
+    }, 2000);
+  });
+</script>
+
+</body>
+</html>

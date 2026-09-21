@@ -19,6 +19,7 @@ from PySide6.QtWidgets import (
 )
 
 from src.lib.settings import get_settings
+from src.lib.f1_theme import F1_GREY_LITE, F1_RED, F1_DARK, F1_GREY_MID
 
 
 class SettingsDialog(QDialog):
@@ -32,8 +33,8 @@ class SettingsDialog(QDialog):
 
     def _setup_ui(self):
         """Set up the dialog UI."""
-        self.setWindowTitle("Settings")
-        self.setMinimumWidth(500)
+        self.setWindowTitle("Formula 1 · Settings")
+        self.setMinimumWidth(540)
         self.setModal(True)
 
         layout = QVBoxLayout()
@@ -60,7 +61,7 @@ class SettingsDialog(QDialog):
             "This is where FastF1 stores downloaded session data.\n"
             "Changing this location will not move existing cached data."
         )
-        cache_help.setStyleSheet("color: gray; font-size: 11px;")
+        cache_help.setStyleSheet(f"color: {F1_GREY_LITE}; font-size: 11px;")
         cache_help.setWordWrap(True)
         cache_layout.addRow("", cache_help)
 
@@ -80,7 +81,7 @@ class SettingsDialog(QDialog):
             "This is where pre-processed telemetry data is stored.\n"
             "Helps speed up loading previously viewed sessions."
         )
-        computed_help.setStyleSheet("color: gray; font-size: 11px;")
+        computed_help.setStyleSheet(f"color: {F1_GREY_LITE}; font-size: 11px;")
         computed_help.setWordWrap(True)
         cache_layout.addRow("", computed_help)
 
@@ -92,6 +93,11 @@ class SettingsDialog(QDialog):
         # Reset to defaults button
         reset_layout = QHBoxLayout()
         self.reset_btn = QPushButton("Reset to Defaults")
+        self.reset_btn.setStyleSheet(
+            f"background-color: transparent; color: {F1_GREY_LITE};"
+            f"border: 1px solid {F1_GREY_MID}; padding: 6px 14px;"
+            f"font-size: 12px; border-radius: 4px;"
+        )
         self.reset_btn.clicked.connect(self._reset_to_defaults)
         reset_layout.addWidget(self.reset_btn)
         reset_layout.addStretch()

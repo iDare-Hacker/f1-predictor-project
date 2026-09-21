@@ -6,6 +6,7 @@ from src.cli.race_selection import cli_load
 from src.gui.race_selection import RaceSelectionWindow
 from PySide6.QtWidgets import QApplication
 from src.lib.season import get_season
+from src.lib.f1_theme import apply_f1_theme
 import logging
 
 def main(year=None, round_number=None, playback_speed=1, session_type='R', visible_hud=True, ready_file=None, show_telemetry_viewer=True):
@@ -160,6 +161,9 @@ if __name__ == "__main__":
   # Run the GUI
 
   app = QApplication(sys.argv)
+  apply_f1_theme(app)          # Apply official F1 brand design system
+  app.setApplicationName("F1 Race Replay")
+  app.setApplicationVersion("1.0")
   win = RaceSelectionWindow()
   win.show()
   sys.exit(app.exec())
