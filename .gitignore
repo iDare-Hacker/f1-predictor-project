@@ -6,13 +6,6 @@ venv/
 env/
 __pycache__/
 *.py[cod]
-*.pyc
-
-# ──────────────────────────────────────────────
-#  FastF1 API cache (large, auto-regenerated)
-# ──────────────────────────────────────────────
-ml/fastf1_cache/
-.fastf1-cache/
 
 # ──────────────────────────────────────────────
 #  FastF1 API cache (large, auto-regenerated)
