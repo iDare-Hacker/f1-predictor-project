@@ -14,7 +14,35 @@ from src.lib.settings import get_settings
 from src.lib.time import parse_time_string
 from src.lib.tyres import get_tyre_compound_int
 
-def enable_cache():
+import shutil
+import glob
+
+def clear_cache_data():
+    settings = get_settings()
+    cache_path = settings.cache_location
+    
+    # 1. Clear FastF1 cache directory
+    if os.path.exists(cache_path):
+        try:
+            shutil.rmtree(cache_path)
+            print("Cleared FastF1 cache to save RAM/storage.")
+        except Exception as e:
+            print(f"Could not clear FastF1 cache: {e}")
+
+    # 2. Clear our computed telemetry cache
+    computed_dir = "computed_data"
+    if os.path.exists(computed_dir):
+        try:
+            for pkl in glob.glob(os.path.join(computed_dir, "*.pkl")):
+                os.remove(pkl)
+            print("Cleared computed telemetry data.")
+        except Exception as e:
+            print(f"Could not clear computed data: {e}")
+
+def enable_cache(clear=False):
+    if clear:
+        clear_cache_data()
+
     # Get cache location from settings
     settings = get_settings()
     cache_path = settings.cache_location
@@ -575,15 +603,16 @@ def get_race_telemetry(session, session_type="R"):
 
     max_lap_number = 0
 
-    # 1. Get all of the drivers telemetry data using multiprocessing
-    # Prepare arguments for parallel processing
-    print(f"Processing {len(drivers)} drivers in parallel...")
+    # 1. Get all of the drivers telemetry data using limited multiprocessing
+    # Prepare arguments
+    print(f"Processing {len(drivers)} drivers' data")
     driver_args = [
         (driver_no, session, driver_codes[driver_no]) for driver_no in drivers
     ]
 
-    num_processes = min(cpu_count(), len(drivers))
-
+    # Limit to 4 processes max to prevent OOM crash
+    num_processes = min(6, cpu_count(), len(drivers))
+    
     with Pool(processes=num_processes) as pool:
         results = pool.map(_process_single_driver, driver_args)
 
@@ -1369,12 +1398,14 @@ def get_quali_telemetry(session, session_type="Q"):
 
     driver_args = [(session, driver_codes[driver_no]) for driver_no in session.drivers]
 
-    print(f"Processing {len(session.drivers)} drivers in parallel...")
+    print(f"Processing {len(session.drivers)} drivers in parallel (max 4 processes to limit RAM)...")
 
-    num_processes = min(cpu_count(), len(session.drivers))
+    # Limit to 4 processes max to prevent OOM crash
+    num_processes = min(4, cpu_count(), len(session.drivers))
 
     with Pool(processes=num_processes) as pool:
         results = pool.map(_process_quali_driver, driver_args)
+        
     for result in results:
         driver_code = result["driver_code"]
         telemetry_data[driver_code] = {

@@ -440,13 +440,10 @@ class RaceSelectionWindow(QMainWindow):
 
             def run(self):
                 try:
-                    try:
-                        from src.f1_data import enable_cache
-                        enable_cache()
-                    except Exception:
-                        pass
-                    sess = load_session(self.year, self.round_no, self.session_type)
-                    self.result.emit(sess)
+                    # We skip loading the heavy telemetry in the GUI process 
+                    # because the child process (main.py) will do it anyway.
+                    # This prevents Out-Of-Memory (OOM) crashes by halving the RAM usage.
+                    self.result.emit(True)
                 except Exception as e:
                     self.error.emit(str(e))
 

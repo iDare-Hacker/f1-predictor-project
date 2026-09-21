@@ -11,12 +11,13 @@ import logging
 
 def main(year=None, round_number=None, playback_speed=1, session_type='R', visible_hud=True, ready_file=None, show_telemetry_viewer=True):
   print(f"Loading F1 {year} Round {round_number} Session '{session_type}'")
+  
+  # Enable cache for fastf1 and clear previous data to save RAM/storage
+  enable_cache(clear=True)
+  
   session = load_session(year, round_number, session_type)
 
   print(f"Loaded session: {session.event['EventName']} - {session.event['RoundNumber']} - {session_type}")
-
-  # Enable cache for fastf1
-  enable_cache()
 
   if session_type == 'Q' or session_type == 'SQ':
 

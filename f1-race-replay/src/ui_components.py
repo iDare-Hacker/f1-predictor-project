@@ -708,8 +708,11 @@ class QualifyingSegmentSelectorComponent(BaseComponent):
         
         # Draw title
         title = f"Qualifying Sessions - {driver_result.get('code','')}"
-        arcade.Text(title, left + 20, top - 30, arcade.color.WHITE, 18, 
+        arcade.Text(title, left + 20, top - 25, arcade.color.WHITE, 18, 
                bold=True, anchor_x="left", anchor_y="center").draw()
+               
+        arcade.Text("Click on any session", left + 20, top - 55, arcade.color.LIGHT_GRAY, 12, 
+               anchor_x="left", anchor_y="center").draw()
         
         # Draw segments
         segment_height = 50
