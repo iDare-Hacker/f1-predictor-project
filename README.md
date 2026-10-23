@@ -37,10 +37,26 @@ cannot be loaded.** This is upstream — no change in this repo can restore the 
 | `live_visualizer/` | ✅ Unaffected — uses the public OpenF1 API |
 | `ml/predict.py` | ⚠️ Works only for sessions in `ml/fastf1_cache/` |
 | `ml/train_model.py` | ⚠️ Cannot fetch new seasons; existing `historical_data.csv` still trains |
-| `f1-race-replay/` | ⚠️ Replays only sessions in `.fastf1-cache/` |
+| `f1-race-replay/` | ✅ Races/sprints 2023+ via OpenF1; other sessions need the cache |
 
-A failed load now reports this in one message instead of a traceback. Track upstream
-progress at [Fast-F1#978](https://github.com/theOehrly/Fast-F1/issues/978) and
+**Workaround: the race replay can read from OpenF1 instead.** `api.openf1.org`
+republishes the same live-timing feed, needs no credentials, and is unaffected.
+The replay falls back to it automatically when FastF1 comes up empty:
+
+```bash
+python main.py --viewer --year 2026 --round 1              # auto: FastF1, then OpenF1
+python main.py --viewer --year 2026 --round 1 --source openf1   # force OpenF1
+python main.py --viewer --year 2026 --round 1 --source fastf1   # cache only
+```
+
+Limits of the OpenF1 path: **2023 onwards only**, race and sprint sessions only
+(qualifying still needs FastF1's cache), and no per-lap DRS channel — the replay
+uses its speed-based DRS detection instead. Track status is derived from race
+control messages rather than a dedicated feed. A full race takes ~90 s to fetch
+and is then cached in `computed_data/`.
+
+Track upstream progress at
+[Fast-F1#978](https://github.com/theOehrly/Fast-F1/issues/978) and
 [f1-race-replay#354](https://github.com/IAmTomShaw/f1-race-replay/issues/354).
 
 > **Do not delete `.fastf1-cache/` or `ml/fastf1_cache/`.** While the archive is

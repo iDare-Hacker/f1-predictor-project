@@ -1,4 +1,6 @@
 from src.f1_data import get_race_telemetry, enable_cache, get_circuit_rotation, load_session, get_quali_telemetry, list_rounds, list_sprints, SessionDataUnavailable
+from src import openf1_data
+from src.openf1_client import OpenF1Error
 from src.run_session import run_arcade_replay, launch_insights_menu
 from src.interfaces.qualifying import run_qualifying_replay
 import sys
@@ -9,14 +11,71 @@ from src.lib.season import get_season
 from src.lib.f1_theme import apply_f1_theme
 import logging
 
-def main(year=None, round_number=None, playback_speed=1, session_type='R', visible_hud=True, ready_file=None, show_telemetry_viewer=True, clear_cache=False):
+def run_race_openf1(year, round_number, playback_speed, session_type, visible_hud, ready_file):
+  """Replay a race/sprint using OpenF1 as the data source."""
+  race_telemetry = openf1_data.get_race_telemetry(
+    year, round_number, session_type, refresh="--refresh-data" in sys.argv
+  )
+
+  # OpenF1 has no per-lap DRS channel, so the replay falls back to its
+  # speed-based DRS detection; the track layout comes from the reference lap.
+  example_lap = race_telemetry.get("reference_lap")
+
+  session_info = openf1_data.get_session_info(year, round_number, session_type)
+  session_info["total_laps"] = race_telemetry["total_laps"]
+  session_info["circuit_length_m"] = (
+    float(example_lap["Distance"].max())
+    if example_lap is not None and "Distance" in example_lap
+    else None
+  )
+
+  launch_insights_menu()
+  print("Launching insights menu...")
+
+  run_arcade_replay(
+    frames=race_telemetry['frames'],
+    track_statuses=race_telemetry['track_statuses'],
+    example_lap=example_lap,
+    drivers=list(race_telemetry['driver_colors'].keys()),
+    playback_speed=playback_speed,
+    driver_colors=race_telemetry['driver_colors'],
+    title=f"{session_info['event_name']} - {'Sprint' if session_type == 'S' else 'Race'} (OpenF1)",
+    total_laps=race_telemetry['total_laps'],
+    circuit_rotation=openf1_data.get_circuit_rotation(year, round_number, session_type),
+    visible_hud=visible_hud,
+    ready_file=ready_file,
+    session_info=session_info,
+    session=None,
+    enable_telemetry=True,
+    race_control_messages=race_telemetry.get('race_control_messages', [])
+  )
+
+
+def main(year=None, round_number=None, playback_speed=1, session_type='R', visible_hud=True, ready_file=None, show_telemetry_viewer=True, clear_cache=False, source='auto'):
   print(f"Loading F1 {year} Round {round_number} Session '{session_type}'")
 
   # Clearing is opt-in (--clear-cache). F1's archive returns 401 since mid-October
   # 2026, so a cached session that gets wiped cannot be downloaded again.
   enable_cache(clear=clear_cache)
-  
-  session = load_session(year, round_number, session_type)
+
+  if source == 'openf1':
+    if session_type in ('Q', 'SQ'):
+      raise OpenF1Error(
+        "The OpenF1 backend covers race and sprint replays only; qualifying "
+        "still needs FastF1's cache."
+      )
+    run_race_openf1(year, round_number, playback_speed, session_type, visible_hud, ready_file)
+    return
+
+  try:
+    session = load_session(year, round_number, session_type)
+  except SessionDataUnavailable:
+    # 'auto': FastF1's archive is gated, so try OpenF1 before giving up.
+    if source == 'auto' and session_type not in ('Q', 'SQ'):
+      print("\nFastF1 has no data for this session - trying OpenF1 instead…\n")
+      run_race_openf1(year, round_number, playback_speed, session_type, visible_hud, ready_file)
+      return
+    raise
 
   print(f"Loaded session: {session.event['EventName']} - {session.event['RoundNumber']} - {session_type}")
 
@@ -41,7 +100,15 @@ def main(year=None, round_number=None, playback_speed=1, session_type='R', visib
 
     # Get the drivers who participated in the race
 
-    race_telemetry = get_race_telemetry(session, session_type=session_type)
+    try:
+      race_telemetry = get_race_telemetry(session, session_type=session_type)
+    except (SessionDataUnavailable, ValueError) as e:
+      # Laps existed but the telemetry channels did not. OpenF1 may still have it.
+      if source != 'auto':
+        raise
+      print(f"\nFastF1 telemetry unusable ({e}) - trying OpenF1 instead…\n")
+      run_race_openf1(year, round_number, playback_speed, session_type, visible_hud, ready_file)
+      return
 
     # Get example lap for track layout
     # Qualifying lap preferred for DRS zones (fallback to fastest race lap (no DRS data))
@@ -164,10 +231,20 @@ if __name__ == "__main__":
       if idx < len(sys.argv):
         ready_file = sys.argv[idx]
 
+    # Data source: 'auto' (FastF1, falling back to OpenF1), or force one.
+    source = 'auto'
+    if "--source" in sys.argv:
+      idx = sys.argv.index("--source") + 1
+      if idx < len(sys.argv):
+        source = sys.argv[idx].lower()
+      if source not in ('auto', 'fastf1', 'openf1'):
+        print(f"Unknown --source '{source}'. Use auto, fastf1 or openf1.", file=sys.stderr)
+        sys.exit(2)
+
     try:
       main(year, round_number, playback_speed, session_type=session_type, visible_hud=visible_hud, ready_file=ready_file,
-           clear_cache="--clear-cache" in sys.argv)
-    except SessionDataUnavailable as e:
+           clear_cache="--clear-cache" in sys.argv, source=source)
+    except (SessionDataUnavailable, OpenF1Error, openf1_data.OpenF1DataUnavailable) as e:
       print(f"\n{e}\n", file=sys.stderr)
       sys.exit(1)
     sys.exit(0)

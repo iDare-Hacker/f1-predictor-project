@@ -20,7 +20,7 @@ F1_STYLESHEET = f"""
 QWidget {{
     background-color: {F1_BLACK};
     color: {F1_OFF_WHITE};
-    font-family: "Inter", "Segoe UI", "Arial", sans-serif;
+    font-family: __F1_FONT_STACK__;
     font-size: 13px;
     selection-background-color: {F1_RED};
     selection-color: {F1_WHITE};
@@ -411,10 +411,34 @@ QFrame[frameShape="5"] {{ /* VLine */
 """
 
 
+# UI font preference, most wanted first. "Inter" is the brand font but is not
+# installed by default anywhere, so each platform's system UI font follows it.
+_FONT_PREFERENCES = (
+    "Inter",
+    "SF Pro Text", "Helvetica Neue",   # macOS
+    "Segoe UI",                        # Windows
+    "Cantarell", "Ubuntu", "Noto Sans", "DejaVu Sans", "Liberation Sans",  # Linux
+    "Arial", "Helvetica",
+)
+
+
+def resolve_font_families() -> list[str]:
+    """Return the preferred UI families that are actually installed.
+
+    Naming a missing family makes Qt scan every font alias on startup and then
+    pick a fallback at random ("Populating font family aliases took N ms"), so
+    only families present on this machine are ever passed to Qt.
+    """
+    from PySide6.QtGui import QFontDatabase
+
+    installed = {name.casefold() for name in QFontDatabase.families()}
+    available = [f for f in _FONT_PREFERENCES if f.casefold() in installed]
+    return available or [QFontDatabase.systemFont(QFontDatabase.GeneralFont).family()]
+
+
 def apply_f1_theme(app) -> None:
     """Apply the F1 brand stylesheet to a QApplication instance."""
     from PySide6.QtGui import QPalette, QColor, QFont
-    from PySide6.QtCore import Qt
 
     # Set dark palette first (prevents white flash before stylesheet loads)
     palette = QPalette()
@@ -433,10 +457,16 @@ def apply_f1_theme(app) -> None:
     palette.setColor(QPalette.HighlightedText, QColor(F1_WHITE))
     app.setPalette(palette)
 
+    # Resolve the font stack once, then use it for both the stylesheet and QFont
+    families = resolve_font_families()
+    font_stack = ", ".join(f'"{f}"' for f in families) + ", sans-serif"
+
     # Apply stylesheet
-    app.setStyleSheet(F1_STYLESHEET)
+    app.setStyleSheet(F1_STYLESHEET.replace("__F1_FONT_STACK__", font_stack))
 
     # Set default font
-    font = QFont("Inter", 13)
+    font = QFont()
+    font.setFamilies(families)
+    font.setPointSize(13)
     font.setWeight(QFont.Normal)
     app.setFont(font)
