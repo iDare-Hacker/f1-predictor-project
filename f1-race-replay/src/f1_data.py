@@ -193,14 +193,68 @@ def load_session(year, round_number, session_type="R"):
 
 
 def get_driver_colors(session):
-    color_mapping = fastf1.plotting.get_driver_color_mapping(session)
+    # Try the official FastF1 plotting API first
+    try:
+        color_mapping = fastf1.plotting.get_driver_color_mapping(session)
+        rgb_colors = {}
+        for driver, hex_color in color_mapping.items():
+            hex_color = hex_color.lstrip("#")
+            rgb = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+            rgb_colors[driver] = rgb
+        return rgb_colors
+    except Exception as e:
+        print(f"Warning: Could not fetch driver color mapping from FastF1 plotting API: {e}")
+        print("Falling back to session results / default team colors.")
 
-    # Convert hex colors to RGB tuples
+    # Fallback 1: Extract TeamColor from session.results (already loaded)
     rgb_colors = {}
-    for driver, hex_color in color_mapping.items():
-        hex_color = hex_color.lstrip("#")
-        rgb = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
-        rgb_colors[driver] = rgb
+    try:
+        results = session.results
+        if results is not None and not results.empty and "TeamColor" in results.columns:
+            for _, row in results.iterrows():
+                driver_code = row.get("Abbreviation", None)
+                team_color = row.get("TeamColor", None)
+                if driver_code and team_color and not pd.isna(team_color):
+                    hex_color = str(team_color).lstrip("#")
+                    if len(hex_color) == 6:
+                        rgb = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+                        rgb_colors[driver_code] = rgb
+            if rgb_colors:
+                return rgb_colors
+    except Exception:
+        pass
+
+    # Fallback 2: Hardcoded 2024-2026 F1 team color palette
+    _TEAM_COLORS = {
+        "red bull": (54, 113, 198),
+        "mercedes": (39, 244, 210),
+        "ferrari": (232, 0, 32),
+        "mclaren": (255, 135, 0),
+        "aston martin": (34, 153, 113),
+        "alpine": (0, 147, 204),
+        "williams": (0, 90, 255),
+        "haas": (182, 186, 189),
+        "kick sauber": (82, 226, 82),
+        "sauber": (82, 226, 82),
+        "rb": (102, 146, 255),
+        "racing bulls": (102, 146, 255),
+    }
+    try:
+        results = session.results
+        if results is not None and not results.empty and "TeamName" in results.columns:
+            for _, row in results.iterrows():
+                driver_code = row.get("Abbreviation", None)
+                team_name = str(row.get("TeamName", "")).strip().lower()
+                if driver_code and team_name:
+                    for key, color in _TEAM_COLORS.items():
+                        if key in team_name:
+                            rgb_colors[driver_code] = color
+                            break
+                    else:
+                        rgb_colors[driver_code] = (128, 128, 128)
+    except Exception:
+        pass
+
     return rgb_colors
 
 

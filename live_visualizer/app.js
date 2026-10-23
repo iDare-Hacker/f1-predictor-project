@@ -118,8 +118,22 @@ class OpenF1Client {
     return this.fetch('pit', { session_key: sessionKey });
   }
 
-  // Latest GPS locations (for track map)
+  // Latest GPS locations — 8-second window for live races
   async getLocations(sessionKey) {
+    const cutoff = new Date(Date.now() - 8000).toISOString().replace('Z', '');
+    const data = await this.fetch('location', { session_key: sessionKey, date_gt: cutoff });
+    const map = {};
+    data.forEach(loc => {
+      const dn = loc.driver_number;
+      if (!map[dn] || new Date(loc.date) > new Date(map[dn].date)) {
+        map[dn] = loc;
+      }
+    });
+    return map;
+  }
+
+  // Full session location history — used once for finished sessions
+  async getLocationsAll(sessionKey) {
     const data = await this.fetch('location', { session_key: sessionKey });
     const map = {};
     data.forEach(loc => {
@@ -128,7 +142,7 @@ class OpenF1Client {
         map[dn] = loc;
       }
     });
-    return map; // keyed by driver_number
+    return map;
   }
 }
 
@@ -297,58 +311,70 @@ class TrackMapRenderer {
   constructor(svgEl) {
     this.svg = svgEl;
     this._trackBuilt = false;
-    this._trackPoints = []; // [{x, y}]
     this._viewBox = { minX: 0, minY: 0, w: 1000, h: 600 };
   }
 
-  // Collect track outline from location data of all drivers
-  buildTrack(locationsMap) {
-    if (this._trackBuilt || Object.keys(locationsMap).length === 0) return;
+  // Fetch a full driver lap trail from the API and draw the circuit outline
+  async buildTrack(sessionKey) {
+    if (this._trackBuilt) return;
 
-    // Use any one driver's recent track points from history
-    // Since we only get latest per driver, we build a static reference from all drivers
-    const pts = Object.values(locationsMap).map(l => ({ x: l.x ?? 0, y: l.y ?? 0 }));
-    if (pts.length < 3) return;
+    try {
+      const resp = await fetch(`https://api.openf1.org/v1/location?session_key=${sessionKey}&driver_number=1`);
+      if (!resp.ok) return;
+      const rawPts = await resp.json();
 
-    this._trackPoints = pts;
+      // Downsample every 10th point; skip invalid (0,0) coords
+      const pts = rawPts.filter((p, i) => i % 10 === 0 && p.x !== 0 && p.y !== 0 && p.x != null && p.y != null);
+      if (pts.length < 10) return;
 
-    const xs = pts.map(p => p.x);
-    const ys = pts.map(p => p.y);
-    const pad = 150;
-    const minX = Math.min(...xs) - pad;
-    const minY = Math.min(...ys) - pad;
-    const w = Math.max(...xs) - minX + pad;
-    const h = Math.max(...ys) - minY + pad;
-    this._viewBox = { minX, minY, w, h };
+      const xs = pts.map(p => p.x);
+      const ys = pts.map(p => -p.y); // OpenF1 Y is inverted vs SVG
 
-    this.svg.setAttribute('viewBox', `${minX} ${minY} ${w} ${h}`);
-    this._trackBuilt = false; // will build outline on first full render
-  }
+      const pad = 100;
+      const minX = Math.min(...xs) - pad;
+      const minY = Math.min(...ys) - pad;
+      const w    = Math.max(...xs) - minX + pad * 2;
+      const h    = Math.max(...ys) - minY + pad * 2;
 
-  _project(x, y) {
-    return { x, y: -y }; // OpenF1 y is inverted vs SVG
+      // Save viewBox so renderDrivers can scale dots correctly
+      this._viewBox = { minX, minY, w, h };
+
+      this.svg.setAttribute('viewBox', `${minX} ${minY} ${w} ${h}`);
+      this.svg.setAttribute('width',  '100%');
+      this.svg.setAttribute('height', '100%');
+
+      // Draw the circuit outline
+      const polyline = document.createElementNS('http://www.w3.org/2000/svg', 'polyline');
+      polyline.setAttribute('points', pts.map(p => `${p.x},${-p.y}`).join(' '));
+      polyline.setAttribute('fill', 'none');
+      polyline.setAttribute('stroke', 'rgba(255,255,255,0.15)');
+      polyline.setAttribute('stroke-width', `${Math.max(w * 0.02, 60)}`);
+      polyline.setAttribute('stroke-linejoin', 'round');
+      polyline.setAttribute('stroke-linecap',  'round');
+      this.svg.prepend(polyline);
+
+      this._trackBuilt = true;
+    } catch (e) {
+      console.warn('Could not build track outline', e);
+    }
   }
 
   renderDrivers(locationsMap, driversMap, selectedDriver) {
     if (Object.keys(locationsMap).length === 0) return;
 
-    const xs = Object.values(locationsMap).map(l => l.x ?? 0);
-    const ys = Object.values(locationsMap).map(l => l.y ?? 0);
-    const pad = 150;
-    const minX = Math.min(...xs) - pad;
-    const maxX = Math.max(...xs) + pad;
-    const minY = Math.min(...ys) - pad;
-    const maxY = Math.max(...ys) + pad;
-    const w = maxX - minX;
-    const h = maxY - minY;
-
-    this.svg.setAttribute('viewBox', `${minX} ${-maxY} ${w} ${h}`);
-    this.svg.setAttribute('width',  '100%');
-    this.svg.setAttribute('height', '100%');
-
     // Remove old driver dots
     const oldDots = this.svg.querySelectorAll('.driver-dot, .driver-label-bg, .driver-label');
     oldDots.forEach(el => el.remove());
+
+    // Scale dot/label sizes relative to the viewBox so they look right on any circuit
+    const vbW = this._viewBox?.w || 10000;
+    const dotR    = vbW * 0.035;
+    const dotSelR = vbW * 0.05;
+    const labelW  = vbW * 0.12;
+    const labelH  = vbW * 0.05;
+    const labelRx = vbW * 0.01;
+    const fontSize = vbW * 0.035;
+    const strokeW  = vbW * 0.005;
 
     // Draw driver dots
     Object.entries(locationsMap).forEach(([dn, loc]) => {
@@ -357,36 +383,37 @@ class TrackMapRenderer {
       const abbr  = drv.name_acronym ?? `#${dn}`;
       const cx    = loc.x ?? 0;
       const cy    = -(loc.y ?? 0);
-      const r     = parseInt(dn) === selectedDriver ? 10 : 7;
+      const r     = parseInt(dn) === selectedDriver ? dotSelR : dotR;
       const isSel = parseInt(dn) === selectedDriver;
 
       const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
       circle.setAttribute('cx', cx);
       circle.setAttribute('cy', cy);
-      circle.setAttribute('r', r);
+      circle.setAttribute('r',  r);
       circle.setAttribute('fill', color);
       circle.setAttribute('class', 'driver-dot');
       circle.setAttribute('stroke', isSel ? '#fff' : 'rgba(0,0,0,0.5)');
-      circle.setAttribute('stroke-width', isSel ? 2 : 1);
+      circle.setAttribute('stroke-width', isSel ? strokeW * 1.5 : strokeW);
       circle.style.cursor = 'pointer';
       circle.onclick = () => window.app?.selectDriver(parseInt(dn));
       this.svg.appendChild(circle);
 
-      // Label
+      // Label background
       const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
-      rect.setAttribute('x', cx - 12);
-      rect.setAttribute('y', cy - r - 16);
-      rect.setAttribute('width', 24);
-      rect.setAttribute('height', 13);
-      rect.setAttribute('rx', 3);
-      rect.setAttribute('class', 'driver-label-bg');
+      rect.setAttribute('x',      cx - labelW / 2);
+      rect.setAttribute('y',      cy - r - labelH - vbW * 0.005);
+      rect.setAttribute('width',  labelW);
+      rect.setAttribute('height', labelH);
+      rect.setAttribute('rx',     labelRx);
+      rect.setAttribute('class',  'driver-label-bg');
       this.svg.appendChild(rect);
 
+      // Label text
       const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
       text.setAttribute('x', cx);
-      text.setAttribute('y', cy - r - 10);
+      text.setAttribute('y', cy - r - labelH / 2 + fontSize * 0.35);
       text.setAttribute('class', 'driver-label');
-      text.setAttribute('font-size', '10');
+      text.setAttribute('font-size', fontSize);
       text.setAttribute('fill', '#fff');
       text.textContent = abbr;
       this.svg.appendChild(text);
@@ -651,6 +678,9 @@ class F1App {
       console.log('[F1App] Session:', this.session.session_name, this.sessionKey);
       this.sessionRenderer.render(this.session, []);
       document.getElementById('status-badge')?.classList.remove('hidden');
+
+      // Build track outline in the background using the full lap trail
+      this.trackMap.buildTrack(this.sessionKey);
     } catch (e) {
       console.error('[F1App] Session load error:', e);
       this.toasts.show('API Error', 'Could not load session data. Check connection.', 'error');
@@ -664,6 +694,26 @@ class F1App {
       this.driversMap = {};
       drivers.forEach(d => { this.driversMap[d.driver_number] = d; });
       console.log('[F1App] Loaded', Object.keys(this.driversMap).length, 'drivers');
+
+      // Immediately fetch last known GPS position for every driver (works for
+      // both live sessions and sessions that finished days ago)
+      const driverNums = Object.keys(this.driversMap).map(Number);
+      console.log('[F1App] Fetching GPS positions for', driverNums.length, 'drivers…');
+      const results = await Promise.allSettled(
+        driverNums.map(dn =>
+          this.client.fetch('location', { session_key: this.sessionKey, driver_number: dn })
+            .then(data => data.length > 0 ? { dn, loc: data[data.length - 1] } : null)
+            .catch(() => null)
+        )
+      );
+      results.forEach(r => {
+        if (r.status === 'fulfilled' && r.value) {
+          this.locationsMap[r.value.dn] = r.value.loc;
+        }
+      });
+      console.log('[F1App] GPS positions loaded:', Object.keys(this.locationsMap).length, 'drivers');
+      // Render dots immediately (don't wait for first poll cycle)
+      this.trackMap.renderDrivers(this.locationsMap, this.driversMap, this.selectedDriver);
     } catch (e) {
       console.error('[F1App] Driver load error:', e);
     }
@@ -699,11 +749,26 @@ class F1App {
       } catch (e) { this._handlePollError('laps', e); }
     }, POLL_RATES.laps);
 
-    // Locations (track map)
+    // Locations (track map) — only poll for updates during live sessions
     this.polling.register('location', async () => {
       try {
-        this.locationsMap = await this.client.getLocations(this.sessionKey);
-        this.trackMap.renderDrivers(this.locationsMap, this.driversMap, this.selectedDriver);
+        // Only fetch recent data (last 8s). For finished sessions this returns
+        // nothing, but locationsMap is already pre-populated from _loadDrivers.
+        const cutoff = new Date(Date.now() - 8000).toISOString().replace('Z', '');
+        const data = await this.client.fetch('location', {
+          session_key: this.sessionKey,
+          date_gt: cutoff,
+        });
+        if (data.length > 0) {
+          data.forEach(loc => {
+            const dn = loc.driver_number;
+            if (!this.locationsMap[dn] ||
+                new Date(loc.date) > new Date(this.locationsMap[dn].date)) {
+              this.locationsMap[dn] = loc;
+            }
+          });
+          this.trackMap.renderDrivers(this.locationsMap, this.driversMap, this.selectedDriver);
+        }
       } catch (e) { this._handlePollError('location', e); }
     }, POLL_RATES.location);
 
