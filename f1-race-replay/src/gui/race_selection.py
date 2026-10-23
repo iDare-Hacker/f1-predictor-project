@@ -38,6 +38,20 @@ class FetchScheduleWorker(QThread):
         except Exception as e:
             self.error.emit(str(e))
 
+def _read_child_error(log_path, max_chars=1200):
+    """Return the tail of a replay child's stderr, or '' if there is nothing useful."""
+    try:
+        with open(log_path, "r", errors="replace") as f:
+            text = f.read().strip()
+    except OSError:
+        return ""
+    if not text:
+        return ""
+    if len(text) > max_chars:
+        text = "…\n" + text[-max_chars:]
+    return text
+
+
 class RaceSelectionWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -452,8 +466,14 @@ class RaceSelectionWindow(QMainWindow):
             ready_path = os.path.join(tempfile.gettempdir(), f"f1_ready_{uuid.uuid4().hex}")
             cmd_with_ready = list(cmd) + ["--ready-file", ready_path]
 
+            # Send the child's stderr to a file rather than a pipe: nothing reads the
+            # pipe until exit, and a full pipe buffer would wedge the replay.
+            log_path = os.path.join(tempfile.gettempdir(), f"f1_replay_{uuid.uuid4().hex}.log")
+
             try:
-                proc = subprocess.Popen(cmd_with_ready)
+                # The child dups the descriptor, so the parent's handle can be closed.
+                with open(log_path, "w") as log_file:
+                    proc = subprocess.Popen(cmd_with_ready, stderr=log_file)
             except Exception as exc:
                 try:
                     dlg.close()
@@ -473,10 +493,11 @@ class RaceSelectionWindow(QMainWindow):
                         except Exception:
                             pass
                         timer.stop()
-                        try:
-                            os.remove(ready_path)
-                        except Exception:
-                            pass
+                        for path in (ready_path, log_path):
+                            try:
+                                os.remove(path)
+                            except OSError:
+                                pass
                         return
                     # if process exited early, show error
                     if proc.poll() is not None:
@@ -485,7 +506,12 @@ class RaceSelectionWindow(QMainWindow):
                         except Exception:
                             pass
                         timer.stop()
-                        QMessageBox.critical(self, "Playback error", "Playback process exited before signaling readiness")
+                        QMessageBox.critical(
+                            self,
+                            "Playback error",
+                            _read_child_error(log_path)
+                            or "Playback process exited before signaling readiness",
+                        )
                 except Exception:
                     # ignore transient file-system errors
                     pass

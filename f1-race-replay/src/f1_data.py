@@ -3,14 +3,13 @@ import os
 import pickle
 import sys
 from datetime import timedelta, date
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from multiprocessing import cpu_count, Pool
+from concurrent.futures import ThreadPoolExecutor
+from multiprocessing import cpu_count
 
 import fastf1
 import fastf1.plotting
 import numpy as np
 import pandas as pd
-
 from src.lib.settings import get_settings
 from src.lib.time import parse_time_string
 from src.lib.tyres import get_tyre_compound_int
@@ -61,13 +60,18 @@ DT = 1 / FPS
 
 
 def _process_single_driver(args):
-    """Process telemetry data for a single driver - must be top-level for multiprocessing"""
+    """Process telemetry data for a single driver"""
     driver_no, session, driver_code = args
 
     print(f"Getting telemetry for driver: {driver_code}")
 
-    laps_driver = session.laps.pick_drivers(driver_no)
-    if laps_driver.empty:
+    try:
+        laps_driver = session.laps.pick_drivers(driver_no)
+    except Exception as e:
+        print(f"Warning: Could not get laps for driver {driver_code}: {e}")
+        return None
+
+    if laps_driver is None or laps_driver.empty:
         return None
 
     driver_max_lap = laps_driver.LapNumber.max() if not laps_driver.empty else 0
@@ -183,10 +187,53 @@ def _process_single_driver(args):
     }
 
 
+class SessionDataUnavailable(RuntimeError):
+    """Raised when a session loads but contains no usable timing data."""
+
+
+def _session_data_unavailable_message(year, round_number, session_type, detail=""):
+    settings = get_settings()
+    reason = f" ({detail})" if detail else ""
+    return (
+        f"No timing data available for {year} Round {round_number} "
+        f"session '{session_type}'{reason}.\n\n"
+        "FastF1 reached F1's timing archive but got nothing back. Since mid-October 2026\n"
+        "livetiming.formula1.com returns HTTP 401 for the static archive, so only sessions\n"
+        "already in the local cache can be replayed.\n\n"
+        f"  - Cached sessions live in: {settings.cache_location}\n"
+        "  - Upstream tracking issue: https://github.com/theOehrly/Fast-F1/issues/978\n\n"
+        "If this session simply has not run yet, pick an earlier round."
+    )
+
+
 def load_session(year, round_number, session_type="R"):
     # session_type: 'R' (Race), 'S' (Sprint) etc.
     session = fastf1.get_session(year, round_number, session_type)
-    session.load(telemetry=True, weather=True)
+
+    # session.load() only *logs* a warning when the archive refuses a request, so a
+    # failed load looks like a successful one until a data property is touched and
+    # raises DataNotLoadedError deep inside the replay. Probe it here instead.
+    try:
+        session.load(telemetry=True, weather=True, laps=True)
+    except Exception as e:
+        raise SessionDataUnavailable(
+            _session_data_unavailable_message(year, round_number, session_type, str(e))
+        ) from e
+
+    try:
+        laps = session.laps
+    except Exception as e:
+        raise SessionDataUnavailable(
+            _session_data_unavailable_message(year, round_number, session_type, str(e))
+        ) from e
+
+    if laps is None or laps.empty:
+        raise SessionDataUnavailable(
+            _session_data_unavailable_message(
+                year, round_number, session_type, "no laps in session"
+            )
+        )
+
     return session
 
 
@@ -196,11 +243,26 @@ def load_session(year, round_number, session_type="R"):
 # Module-level cache to avoid repeated (potentially failing) API calls
 _driver_colors_cache = {}
 
+def _session_cache_key(session):
+    # id() would be reused after a session is garbage collected, handing back
+    # another session's colors, so key on the event instead.
+    try:
+        event = session.event
+        return (event.get("EventName"), event.get("RoundNumber"), session.name)
+    except Exception:
+        return None
+
+
 def get_driver_colors(session):
     # Return cached result if we already computed colors for this session
-    cache_key = id(session)
-    if cache_key in _driver_colors_cache:
+    cache_key = _session_cache_key(session)
+    if cache_key is not None and cache_key in _driver_colors_cache:
         return _driver_colors_cache[cache_key]
+
+    def remember(colors):
+        if cache_key is not None:
+            _driver_colors_cache[cache_key] = colors
+        return colors
 
     # Try the official FastF1 plotting API first
     try:
@@ -210,8 +272,7 @@ def get_driver_colors(session):
             hex_color = hex_color.lstrip("#")
             rgb = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
             rgb_colors[driver] = rgb
-        _driver_colors_cache[cache_key] = rgb_colors
-        return rgb_colors
+        return remember(rgb_colors)
     except Exception as e:
         print(f"Warning: Could not fetch driver color mapping from FastF1 plotting API: {e}")
         print("Falling back to session results / default team colors.")
@@ -230,8 +291,7 @@ def get_driver_colors(session):
                         rgb = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
                         rgb_colors[driver_code] = rgb
             if rgb_colors:
-                _driver_colors_cache[cache_key] = rgb_colors
-                return rgb_colors
+                return remember(rgb_colors)
     except Exception:
         pass
 
@@ -266,8 +326,7 @@ def get_driver_colors(session):
     except Exception:
         pass
 
-    _driver_colors_cache[cache_key] = rgb_colors
-    return rgb_colors
+    return remember(rgb_colors)
 
 
 def get_circuit_rotation(session):
@@ -640,6 +699,31 @@ def _compute_safety_car_positions(frames, track_statuses, session):
     print(f"Safety Car: Computed positions for {sc_frame_count} frames")
 
 
+def _require_laps(session, what="lap"):
+    """Return session.laps, or raise SessionDataUnavailable with the reason."""
+    try:
+        laps = session.laps
+    except Exception as e:
+        detail = str(e)
+    else:
+        if laps is not None and not laps.empty:
+            return laps
+        detail = "no laps in session"
+
+    try:
+        event_name = session.event.get("EventName", "this session")
+    except Exception:
+        event_name = "this session"
+
+    raise SessionDataUnavailable(
+        f"No {what} data available for {event_name} ({detail}).\n\n"
+        "Either the session has not run yet, or FastF1 could not retrieve its timing\n"
+        "data. Since mid-October 2026 F1's static archive returns HTTP 401, so only\n"
+        "sessions already in the local cache can be replayed.\n"
+        "See https://github.com/theOehrly/Fast-F1/issues/978"
+    )
+
+
 def get_race_telemetry(session, session_type="R"):
     event_name = str(session).replace(" ", "_")
     cache_suffix = "sprint" if session_type == "S" else "race"
@@ -658,6 +742,8 @@ def get_race_telemetry(session, session_type="R"):
     except FileNotFoundError:
         pass  # Need to compute from scratch
 
+    _require_laps(session, "lap")
+
     drivers = session.drivers
 
     driver_codes = {num: session.get_driver(num)["Abbreviation"] for num in drivers}
@@ -669,18 +755,18 @@ def get_race_telemetry(session, session_type="R"):
 
     max_lap_number = 0
 
-    # 1. Get all of the drivers telemetry data using limited multiprocessing
-    # Prepare arguments
+    # 1. Get all of the drivers telemetry data using limited multithreading
+    # FastF1 Session objects can't be pickled across processes, but threads share memory.
     print(f"Processing {len(drivers)} drivers' data")
     driver_args = [
         (driver_no, session, driver_codes[driver_no]) for driver_no in drivers
     ]
 
-    # Limit to 4 processes max to prevent OOM crash
-    num_processes = min(6, cpu_count(), len(drivers))
+    # Limit to 4 workers max to prevent OOM crash
+    num_workers = min(4, cpu_count(), len(drivers))
     
-    with Pool(processes=num_processes) as pool:
-        results = pool.map(_process_single_driver, driver_args)
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        results = list(executor.map(_process_single_driver, driver_args))
 
     # Process results
     for result in results:
@@ -1091,7 +1177,10 @@ def get_qualifying_results(session):
 
 def get_driver_quali_telemetry(session, driver_code: str, quali_segment: str):
     # Split Q1/Q2/Q3 sections
-    q1, q2, q3 = session.laps.split_qualifying_sessions()
+    try:
+        q1, q2, q3 = session.laps.split_qualifying_sessions()
+    except Exception as e:
+        raise ValueError(f"Could not split qualifying sessions: {e}")
 
     segments = {"Q1": q1, "Q2": q2, "Q3": q3}
 
@@ -1409,7 +1498,8 @@ def _process_quali_driver(args):
             if segment_telemetry["min_speed"] < min_speed or min_speed == 0.0:
                 min_speed = segment_telemetry["min_speed"]
 
-        except ValueError:
+        except Exception as e:
+            print(f"  No {segment} telemetry for {driver_code}: {e}")
             driver_telemetry_data[segment] = {"frames": [], "track_statuses": []}
 
     print(
@@ -1455,6 +1545,8 @@ def get_quali_telemetry(session, session_type="Q"):
                 return data
     except FileNotFoundError:
         pass  # Need to compute from scratch
+
+    _require_laps(session, "qualifying lap")
 
     qualifying_results = get_qualifying_results(session)
 

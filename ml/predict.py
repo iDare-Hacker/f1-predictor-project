@@ -43,6 +43,7 @@ except ImportError:
 SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH    = os.path.join(SCRIPT_DIR, 'model.pkl')
 FEATURES_PATH = os.path.join(SCRIPT_DIR, 'features.json')
+ENCODERS_PATH = os.path.join(SCRIPT_DIR, 'encoders.json')
 DATA_PATH     = os.path.join(SCRIPT_DIR, 'historical_data.csv')
 CACHE_DIR     = os.path.join(SCRIPT_DIR, 'fastf1_cache')
 
@@ -82,6 +83,67 @@ def setup():
 
 
 # ─────────────────────────────────────────────────────────
+#  DIAGNOSTICS
+# ─────────────────────────────────────────────────────────
+def no_session_data_message(year: int, round_number: int) -> str:
+    """Explain an empty session load, which is almost always F1's archive gate."""
+    return (
+        f"\n❌ No timing data available for {year} Round {round_number}.\n"
+        "\nFastF1 reached F1's timing archive but got nothing back. Since mid-October\n"
+        "2026 livetiming.formula1.com returns HTTP 401 for the static archive, so only\n"
+        "sessions already in the local cache can be loaded.\n"
+        "\nWhat works:\n"
+        f"  • Sessions cached under {CACHE_DIR}\n"
+        "  • Checking upstream for auth support: https://github.com/theOehrly/Fast-F1/issues/978\n"
+        "\nIf the session simply has not run yet, pick an earlier round.\n"
+    )
+
+
+# ─────────────────────────────────────────────────────────
+#  CATEGORICAL ENCODING
+# ─────────────────────────────────────────────────────────
+#  train_model.py encodes driver_code/team with sklearn's LabelEncoder,
+#  which assigns integers by sorted class order. Inference has to reproduce
+#  that exact mapping, so we read it from encoders.json and fall back to
+#  re-deriving it from the training CSV (sorted unique == LabelEncoder order).
+UNKNOWN_LABEL = -1
+
+
+def load_label_classes() -> dict[str, list[str]]:
+    """Return {column: [class, ...]} in the same order the model was trained on."""
+    if os.path.exists(ENCODERS_PATH):
+        try:
+            with open(ENCODERS_PATH) as f:
+                classes = json.load(f)
+            if classes.get('driver_code') and classes.get('team'):
+                return classes
+        except (json.JSONDecodeError, OSError) as e:
+            print(f"[Note] Could not read {ENCODERS_PATH}: {e}")
+
+    # Fall back to the training data: LabelEncoder orders classes by sort order.
+    if os.path.exists(DATA_PATH):
+        hist = pd.read_csv(DATA_PATH)
+        return {
+            'driver_code': sorted(hist['driver_code'].fillna('UNKNOWN').unique()),
+            'team':        sorted(hist['team'].fillna('Unknown').unique()),
+        }
+
+    print("⚠  No encoders.json and no historical_data.csv — driver/team encodings")
+    print("   cannot be matched to the trained model. Re-run ml/train_model.py.")
+    return {'driver_code': [], 'team': []}
+
+
+def encode_column(values: pd.Series, classes: list[str], what: str) -> pd.Series:
+    """Map labels to their training integers; unseen labels become UNKNOWN_LABEL."""
+    lookup = {c: i for i, c in enumerate(classes)}
+    encoded = values.map(lookup)
+    unseen = sorted(set(values[encoded.isna()].dropna()))
+    if unseen:
+        print(f"[Note] {what} not present in training data: {', '.join(map(str, unseen))}")
+    return encoded.fillna(UNKNOWN_LABEL).astype(int)
+
+
+# ─────────────────────────────────────────────────────────
 #  BUILD FEATURES FOR ONE RACE
 # ─────────────────────────────────────────────────────────
 def build_features(year: int, round_number: int) -> pd.DataFrame:
@@ -99,7 +161,17 @@ def build_features(year: int, round_number: int) -> pd.DataFrame:
         print(f"❌ Could not load qualifying: {e}")
         sys.exit(1)
 
-    results = quali.results[[
+    # A load can "succeed" with nothing in it: FastF1 only logs a warning when
+    # F1's timing archive refuses a request, then every data property raises.
+    try:
+        quali_results = quali.results
+    except Exception:
+        quali_results = None
+    if quali_results is None or quali_results.empty:
+        print(no_session_data_message(year, round_number))
+        sys.exit(1)
+
+    results = quali_results[[
         'DriverNumber', 'Abbreviation', 'TeamName', 'GridPosition', 'Q1', 'Q2', 'Q3'
     ]].copy()
     results.columns = ['driver_number', 'driver_code', 'team', 'grid_position', 'Q1', 'Q2', 'Q3']
@@ -118,8 +190,11 @@ def build_features(year: int, round_number: int) -> pd.DataFrame:
     pole_time = results['q_time_s'].min()
     results['quali_delta_to_pole'] = (results['q_time_s'] - pole_time).fillna(5.0)
 
-    # Weather
-    weather = quali.weather_data
+    # Weather (optional — absent for older seasons and when the archive is partial)
+    try:
+        weather = quali.weather_data
+    except Exception:
+        weather = None
     if weather is not None and not weather.empty and 'Rainfall' in weather.columns:
         rain_vals = pd.to_numeric(weather['Rainfall'], errors='coerce').fillna(0)
         is_wet = int(rain_vals.mean() > 0.3)
@@ -171,9 +246,15 @@ def build_features(year: int, round_number: int) -> pd.DataFrame:
     results['constructor_rolling_avg_finish']  = results['team'].map(constructor_form).fillna(10.0)
     results['driver_circuit_podium_rate']      = results['driver_code'].map(driver_circuit_pod).fillna(0.15)
 
-    # Encode driver/team as integers (simple hash for inference)
-    results['driver_encoded'] = results['driver_code'].apply(lambda x: abs(hash(x)) % 100)
-    results['team_encoded']   = results['team'].apply(lambda x: abs(hash(x)) % 50)
+    # Encode driver/team with the same mapping the model was trained on.
+    # (A per-process hash() would change the prediction on every run.)
+    label_classes = load_label_classes()
+    results['driver_encoded'] = encode_column(
+        results['driver_code'].fillna('UNKNOWN'), label_classes['driver_code'], 'Drivers'
+    )
+    results['team_encoded'] = encode_column(
+        results['team'].fillna('Unknown'), label_classes['team'], 'Teams'
+    )
 
     return results
 

@@ -25,6 +25,30 @@ f1-predictor-project/
 
 ---
 
+## ⚠️ Known issue: F1's timing archive requires auth (since ~14 Oct 2026)
+
+`livetiming.formula1.com/static/...` now answers **HTTP 401** (a CloudFront edge rule).
+That archive is FastF1's only source for historical timing data, and FastF1's own
+mirror has no 2025/2026 files, so **any session not already in the local cache
+cannot be loaded.** This is upstream — no change in this repo can restore the data.
+
+| Component | Status |
+|---|---|
+| `live_visualizer/` | ✅ Unaffected — uses the public OpenF1 API |
+| `ml/predict.py` | ⚠️ Works only for sessions in `ml/fastf1_cache/` |
+| `ml/train_model.py` | ⚠️ Cannot fetch new seasons; existing `historical_data.csv` still trains |
+| `f1-race-replay/` | ⚠️ Replays only sessions in `.fastf1-cache/` |
+
+A failed load now reports this in one message instead of a traceback. Track upstream
+progress at [Fast-F1#978](https://github.com/theOehrly/Fast-F1/issues/978) and
+[f1-race-replay#354](https://github.com/IAmTomShaw/f1-race-replay/issues/354).
+
+> **Do not delete `.fastf1-cache/` or `ml/fastf1_cache/`.** While the archive is
+> gated, those directories hold the only replayable sessions. Cache clearing in the
+> replay app is now opt-in via `--clear-cache` for this reason.
+
+---
+
 ## ⚙️ Setup (for new contributors)
 
 ### 1. Clone the repo
@@ -42,6 +66,12 @@ source .venv/bin/activate      # On Windows: .venv\Scripts\activate
 ### 3. Install dependencies
 ```bash
 pip install -r requirements.txt
+```
+
+To run the test suite, also install the dev dependencies:
+```bash
+pip install -r f1-race-replay/requirements-dev.txt
+cd f1-race-replay && python -m pytest
 ```
 
 ---
@@ -70,16 +100,22 @@ The pre-trained model (`ml/model.pkl`) is already included. Just run predictions
 python ml/predict.py --year 2025 --round 18
 ```
 
-### (Optional) Re-train the model on fresh data
-> ⚠️ This takes ~30 mins due to API rate limits (500 calls/hour on the free tier).
+### (Optional) Re-train the model
+> ⚠️ **Do not delete `ml/historical_data.csv`.** While F1's archive returns 401 (see
+> above) it cannot be re-downloaded, and it is gitignored — so there is no copy to
+> restore from. Re-training on the existing CSV reproduces AUC 0.935 ± 0.016 in seconds.
 
 ```bash
-rm ml/historical_data.csv   # Clear old cached data first
-python ml/train_model.py
+python ml/train_model.py            # retrain on the existing CSV
+python ml/train_model.py --years 2021 2022 2023 2024   # refetch (needs the archive)
 ```
 
 **Training data:** 2021–2024 seasons (~1679 race entries)  
 **Model AUC:** 0.935 ± 0.016 (cross-validated)
+
+`ml/encoders.json` holds the driver/team → integer mapping the model was trained on.
+`predict.py` needs it to encode categoricals the same way training did; without it,
+predictions silently drift. `train_model.py` rewrites it on every run.
 
 **Key features used:**
 | Feature | Importance |

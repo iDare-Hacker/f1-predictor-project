@@ -45,6 +45,7 @@ from sklearn.preprocessing import StandardScaler
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH  = os.path.join(SCRIPT_DIR, 'model.pkl')
 FEATURES_PATH = os.path.join(SCRIPT_DIR, 'features.json')
+ENCODERS_PATH = os.path.join(SCRIPT_DIR, 'encoders.json')
 DATA_PATH   = os.path.join(SCRIPT_DIR, 'historical_data.csv')
 CACHE_DIR   = os.path.join(SCRIPT_DIR, 'fastf1_cache')
 
@@ -196,10 +197,16 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.sort_values(['year', 'round', 'driver_number']).copy()
 
     # ── 1. Encode categorical columns ──
+    # The fitted classes are exported to encoders.json (see save_encoders) so that
+    # predict.py maps a driver/team to the SAME integer the model was trained on.
     le_driver = LabelEncoder()
     le_team   = LabelEncoder()
     df['driver_encoded'] = le_driver.fit_transform(df['driver_code'].fillna('UNKNOWN'))
     df['team_encoded']   = le_team.fit_transform(df['team'].fillna('Unknown'))
+    df.attrs['label_classes'] = {
+        'driver_code': [str(c) for c in le_driver.classes_],
+        'team':        [str(c) for c in le_team.classes_],
+    }
 
     # ── 2. Rolling driver avg finish (last 5 races, per driver) ──
     df['driver_rolling_avg_finish'] = (
@@ -329,8 +336,13 @@ def main():
     with open(FEATURES_PATH, 'w') as f:
         json.dump(feature_cols, f, indent=2)
 
+    label_classes = df_with_features.attrs.get('label_classes', {})
+    with open(ENCODERS_PATH, 'w') as f:
+        json.dump(label_classes, f, indent=2)
+
     print(f"\n✅ Model saved → {MODEL_PATH}")
     print(f"✅ Features saved → {FEATURES_PATH}")
+    print(f"✅ Encoders saved → {ENCODERS_PATH}")
     print("\nRun predictions with:")
     print("  python ml/predict.py --year 2025 --round 18")
 

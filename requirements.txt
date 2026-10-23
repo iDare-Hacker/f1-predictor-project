@@ -1,3 +1,11 @@
+# Runtime dependencies for the whole project (pinned freeze of a known-good venv).
+# Python 3.14 · install with: pip install -r requirements.txt
+#
+# Test/lint tooling is NOT listed here on purpose — see
+# f1-race-replay/requirements-dev.txt (pytest, pytest-mock, ruff).
+# Per-component subsets live in ml/requirements.txt and
+# f1-race-replay/requirements.txt.
+
 annotated-types==0.8.0
 arcade==3.3.3
 attrs==26.1.0

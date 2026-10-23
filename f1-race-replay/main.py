@@ -1,4 +1,4 @@
-from src.f1_data import get_race_telemetry, enable_cache, get_circuit_rotation, load_session, get_quali_telemetry, list_rounds, list_sprints
+from src.f1_data import get_race_telemetry, enable_cache, get_circuit_rotation, load_session, get_quali_telemetry, list_rounds, list_sprints, SessionDataUnavailable
 from src.run_session import run_arcade_replay, launch_insights_menu
 from src.interfaces.qualifying import run_qualifying_replay
 import sys
@@ -9,11 +9,12 @@ from src.lib.season import get_season
 from src.lib.f1_theme import apply_f1_theme
 import logging
 
-def main(year=None, round_number=None, playback_speed=1, session_type='R', visible_hud=True, ready_file=None, show_telemetry_viewer=True):
+def main(year=None, round_number=None, playback_speed=1, session_type='R', visible_hud=True, ready_file=None, show_telemetry_viewer=True, clear_cache=False):
   print(f"Loading F1 {year} Round {round_number} Session '{session_type}'")
-  
-  # Enable cache for fastf1 and clear previous data to save RAM/storage
-  enable_cache(clear=True)
+
+  # Clearing is opt-in (--clear-cache). F1's archive returns 401 since mid-October
+  # 2026, so a cached session that gets wiped cannot be downloaded again.
+  enable_cache(clear=clear_cache)
   
   session = load_session(year, round_number, session_type)
 
@@ -61,12 +62,16 @@ def main(year=None, round_number=None, playback_speed=1, session_type='R', visib
 
     # fallback: Use fastest race lap
     if example_lap is None:
-        fastest_lap = session.laps.pick_fastest()
-        if fastest_lap is not None:
-            example_lap = fastest_lap.get_telemetry()
-            print("Using fastest race lap (DRS detection may use speed-based fallback)")
-        else:
-            print("Error: No valid laps found in session")
+        try:
+            fastest_lap = session.laps.pick_fastest() if session.laps is not None and not session.laps.empty else None
+            if fastest_lap is not None:
+                example_lap = fastest_lap.get_telemetry()
+                print("Using fastest race lap (DRS detection may use speed-based fallback)")
+            else:
+                print("Error: No valid laps found in session")
+                return
+        except Exception as e:
+            print(f"Error accessing race laps: {e}")
             return
 
     drivers = session.drivers
@@ -135,10 +140,13 @@ if __name__ == "__main__":
 
   if "--list-rounds" in sys.argv:
     list_rounds(year)
-  elif "--list-sprints" in sys.argv:
+    sys.exit(0)
+
+  if "--list-sprints" in sys.argv:
     list_sprints(year)
-  else:
-    playback_speed = 1
+    sys.exit(0)
+
+  playback_speed = 1
 
   if "--viewer" in sys.argv:
   
@@ -156,7 +164,12 @@ if __name__ == "__main__":
       if idx < len(sys.argv):
         ready_file = sys.argv[idx]
 
-    main(year, round_number, playback_speed, session_type=session_type, visible_hud=visible_hud, ready_file=ready_file)
+    try:
+      main(year, round_number, playback_speed, session_type=session_type, visible_hud=visible_hud, ready_file=ready_file,
+           clear_cache="--clear-cache" in sys.argv)
+    except SessionDataUnavailable as e:
+      print(f"\n{e}\n", file=sys.stderr)
+      sys.exit(1)
     sys.exit(0)
 
   # Run the GUI
