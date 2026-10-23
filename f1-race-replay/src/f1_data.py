@@ -3,7 +3,8 @@ import os
 import pickle
 import sys
 from datetime import timedelta, date
-from multiprocessing import Pool, cpu_count
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from multiprocessing import cpu_count
 
 import fastf1
 import fastf1.plotting
@@ -192,7 +193,15 @@ def load_session(year, round_number, session_type="R"):
 # The following functions require a loaded session object
 
 
+# Module-level cache to avoid repeated (potentially failing) API calls
+_driver_colors_cache = {}
+
 def get_driver_colors(session):
+    # Return cached result if we already computed colors for this session
+    cache_key = id(session)
+    if cache_key in _driver_colors_cache:
+        return _driver_colors_cache[cache_key]
+
     # Try the official FastF1 plotting API first
     try:
         color_mapping = fastf1.plotting.get_driver_color_mapping(session)
@@ -201,6 +210,7 @@ def get_driver_colors(session):
             hex_color = hex_color.lstrip("#")
             rgb = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
             rgb_colors[driver] = rgb
+        _driver_colors_cache[cache_key] = rgb_colors
         return rgb_colors
     except Exception as e:
         print(f"Warning: Could not fetch driver color mapping from FastF1 plotting API: {e}")
@@ -220,6 +230,7 @@ def get_driver_colors(session):
                         rgb = tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
                         rgb_colors[driver_code] = rgb
             if rgb_colors:
+                _driver_colors_cache[cache_key] = rgb_colors
                 return rgb_colors
     except Exception:
         pass
@@ -255,6 +266,7 @@ def get_driver_colors(session):
     except Exception:
         pass
 
+    _driver_colors_cache[cache_key] = rgb_colors
     return rgb_colors
 
 
@@ -1004,6 +1016,10 @@ def get_race_telemetry(session, session_type="R"):
     # 5d. Compute Safety Car positions for each frame
     _compute_safety_car_positions(frames, formatted_track_statuses, session)
     print("completed telemetry extraction...")
+
+    # Pre-compute driver colors once
+    race_driver_colors = get_driver_colors(session)
+
     print("Saving to cache file...")
     # If computed_data/ directory doesn't exist, create it
     if not os.path.exists("computed_data"):
@@ -1013,7 +1029,7 @@ def get_race_telemetry(session, session_type="R"):
     with open(f"computed_data/{event_name}_{cache_suffix}_telemetry.pkl", "wb") as f:
         pickle.dump({
             "frames": frames,
-            "driver_colors": get_driver_colors(session),
+            "driver_colors": race_driver_colors,
             "track_statuses": formatted_track_statuses,
             "race_control_messages": formatted_rc_messages,
             "total_laps": int(max_lap_number),
@@ -1024,7 +1040,7 @@ def get_race_telemetry(session, session_type="R"):
     print("The replay should begin in a new window shortly")
     return {
         "frames": frames,
-        "driver_colors": get_driver_colors(session),
+        "driver_colors": race_driver_colors,
         "track_statuses": formatted_track_statuses,
         "race_control_messages": formatted_rc_messages,
         "total_laps": int(max_lap_number),
@@ -1038,6 +1054,9 @@ def get_qualifying_results(session):
     results = session.results
 
     qualifying_data = []
+
+    # Pre-compute driver colors once instead of per-driver
+    driver_colors_map = get_driver_colors(session)
 
     for _, row in results.iterrows():
         driver_code = row["Abbreviation"]
@@ -1061,7 +1080,7 @@ def get_qualifying_results(session):
                 "code": driver_code,
                 "full_name": full_name,
                 "position": position,
-                "color": get_driver_colors(session).get(driver_code, (128, 128, 128)),
+                "color": driver_colors_map.get(driver_code, (128, 128, 128)),
                 "Q1": convert_time_to_seconds(q1_time),
                 "Q2": convert_time_to_seconds(q2_time),
                 "Q3": convert_time_to_seconds(q3_time),
@@ -1454,11 +1473,12 @@ def get_quali_telemetry(session, session_type="Q"):
 
     print(f"Processing {len(session.drivers)} drivers in parallel (max 4 processes to limit RAM)...")
 
-    # Limit to 4 processes max to prevent OOM crash
-    num_processes = min(4, cpu_count(), len(session.drivers))
+    # Use threads instead of processes: FastF1 Session objects can't be
+    # pickled with their loaded data, but threads share memory so this works.
+    num_workers = min(4, cpu_count(), len(session.drivers))
 
-    with Pool(processes=num_processes) as pool:
-        results = pool.map(_process_quali_driver, driver_args)
+    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+        results = list(executor.map(_process_quali_driver, driver_args))
         
     for result in results:
         driver_code = result["driver_code"]
