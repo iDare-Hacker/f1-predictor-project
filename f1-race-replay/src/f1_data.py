@@ -4,7 +4,7 @@ import pickle
 import sys
 from datetime import timedelta, date
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from multiprocessing import cpu_count
+from multiprocessing import cpu_count, Pool
 
 import fastf1
 import fastf1.plotting
